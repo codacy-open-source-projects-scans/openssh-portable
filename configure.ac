@@ -3140,6 +3140,30 @@ if test "x$openssl" = "xyes" ; then
 			ecdsa-sha2-nistp521 \
 			ecdsa-sha2-nistp521-cert-v01@openssh.com"
 	fi
+
+	# Check libcrypto ED25519 support
+	AC_CHECK_FUNCS([EVP_PKEY_get_raw_public_key])
+	AC_CHECK_FUNCS([EVP_PKEY_get_raw_private_key])
+	AC_MSG_CHECKING([whether OpenSSL has ED25519 support])
+	AC_LINK_IFELSE(
+		[AC_LANG_PROGRAM([[
+	#include <string.h>
+	#include <openssl/evp.h>
+		]], [[
+		unsigned char buf[64];
+		memset(buf, 0, sizeof(buf));
+		exit(EVP_PKEY_new_raw_private_key(EVP_PKEY_ED25519,
+		    buf, sizeof(buf)) == NULL);
+		]])],
+		[
+			AC_MSG_RESULT([yes])
+			AC_DEFINE([OPENSSL_HAS_ED25519], [1],
+			    [libcrypto has ed25519 support])
+		],
+		[
+			AC_MSG_RESULT([no])
+		]
+	)
 fi
 
 # PKCS11/U2F depend on OpenSSL and dlopen().
@@ -5551,6 +5575,15 @@ AC_SUBST([TEST_SSH_UTF8], [$TEST_SSH_UTF8])
 AC_SUBST([TEST_MALLOC_OPTIONS], [$TEST_MALLOC_OPTIONS])
 AC_SUBST([UNSUPPORTED_ALGORITHMS], [$unsupported_algorithms])
 AC_SUBST([DEPEND], [$(cat $srcdir/.depend)])
+
+# Binaries for interop tests.
+AC_PATH_PROG([PLINK], [plink])
+AC_PATH_PROG([PUTTYGEN], [puttygen])
+AC_PATH_PROG([CONCH], [conch])
+AC_PATH_PROG([DROPBEAR], [dropbear])
+AC_PATH_PROG([DBCLIENT], [dbclient])
+AC_PATH_PROG([DROPBEARKEY], [dropbearkey])
+AC_PATH_PROG([DROPBEARCONVERT], [dropbearconvert])
 
 CFLAGS="${CFLAGS} ${CFLAGS_AFTER}"
 LDFLAGS="${LDFLAGS} ${LDFLAGS_AFTER}"
