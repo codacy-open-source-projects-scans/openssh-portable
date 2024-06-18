@@ -1,4 +1,4 @@
-/* $OpenBSD: sshd-session.c,v 1.2 2024/05/17 02:39:11 jsg Exp $ */
+/* $OpenBSD: sshd-session.c,v 1.3 2024/06/06 17:15:25 djm Exp $ */
 /*
  * SSH2 implementation:
  * Privilege Separation:
@@ -209,11 +209,7 @@ grace_alarm_handler(int sig)
 		ssh_signal(SIGTERM, SIG_IGN);
 		kill(0, SIGTERM);
 	}
-
-	/* Log error and exit. */
-	sigdie("Timeout before authentication for %s port %d",
-	    ssh_remote_ipaddr(the_active_state),
-	    ssh_remote_port(the_active_state));
+	_exit(EXIT_LOGIN_GRACE);
 }
 
 /* Destroy the host and server keys.  They will no longer be needed. */
@@ -383,6 +379,21 @@ privsep_preauth(struct ssh *ssh)
 static void
 privsep_postauth(struct ssh *ssh, Authctxt *authctxt)
 {
+	int skip_privdrop = 0;
+
+	/*
+	 * Hack for systems that don't support FD passing: retain privileges
+	 * in the post-auth privsep process so it can allocate PTYs directly.
+	 * This is basically equivalent to what we did <= 9.7, which was to
+	 * disable post-auth privsep entriely.
+	 * Cygwin doesn't need to drop privs here although it doesn't support
+	 * fd passing, as AFAIK PTY allocation on this platform doesn't require
+	 * special privileges to begin with.
+	 */
+#if defined(DISABLE_FD_PASSING) && !defined(HAVE_CYGWIN)
+	skip_privdrop = 1;
+#endif
+
 	/* New socket pair */
 	monitor_reinit(pmonitor);
 
@@ -410,7 +421,8 @@ privsep_postauth(struct ssh *ssh, Authctxt *authctxt)
 	reseed_prngs();
 
 	/* Drop privileges */
-	do_setusercontext(authctxt->pw);
+	if (!skip_privdrop)
+		do_setusercontext(authctxt->pw);
 
 	/* It is safe now to apply the key state */
 	monitor_apply_keystate(ssh, pmonitor);
@@ -1040,6 +1052,17 @@ main(int ac, char **av)
 
 	debug("sshd version %s, %s", SSH_VERSION, SSH_OPENSSL_VERSION);
 
+	/* Fetch our configuration */
+	if ((cfg = sshbuf_new()) == NULL)
+		fatal("sshbuf_new config buf failed");
+	setproctitle("%s", "[rexeced]");
+	recv_rexec_state(REEXEC_CONFIG_PASS_FD, cfg, &timing_secret);
+	close(REEXEC_CONFIG_PASS_FD);
+	parse_server_config(&options, "rexec", cfg, &includes, NULL, 1);
+	/* Fill in default values for those options not explicitly set. */
+	fill_default_server_options(&options);
+	options.timing_secret = timing_secret;
+
 	/* Store privilege separation user for later use if required. */
 	privsep_chroot = (getuid() == 0 || geteuid() == 0);
 	if ((privsep_pw = getpwnam(SSH_PRIVSEP_USER)) == NULL) {
@@ -1052,17 +1075,6 @@ main(int ac, char **av)
 		privsep_pw->pw_passwd = xstrdup("*");
 	}
 	endpwent();
-
-	/* Fetch our configuration */
-	if ((cfg = sshbuf_new()) == NULL)
-		fatal("sshbuf_new config buf failed");
-	setproctitle("%s", "[rexeced]");
-	recv_rexec_state(REEXEC_CONFIG_PASS_FD, cfg, &timing_secret);
-	close(REEXEC_CONFIG_PASS_FD);
-	parse_server_config(&options, "rexec", cfg, &includes, NULL, 1);
-	/* Fill in default values for those options not explicitly set. */
-	fill_default_server_options(&options);
-	options.timing_secret = timing_secret;
 
 	if (!debug_flag) {
 		startup_pipe = dup(REEXEC_STARTUP_PIPE_FD);
@@ -1303,6 +1315,8 @@ main(int ac, char **av)
 	ssh_signal(SIGALRM, SIG_DFL);
 	authctxt->authenticated = 1;
 	if (startup_pipe != -1) {
+		/* signal listener that authentication completed successfully */
+		(void)atomicio(vwrite, startup_pipe, "\001", 1);
 		close(startup_pipe);
 		startup_pipe = -1;
 	}
@@ -1451,6 +1465,8 @@ do_ssh2_kex(struct ssh *ssh)
 void
 cleanup_exit(int i)
 {
+	extern int auth_attempted; /* monitor.c */
+
 	if (the_active_state != NULL && the_authctxt != NULL) {
 		do_cleanup(the_active_state, the_authctxt);
 		if (privsep_is_preauth &&
@@ -1463,6 +1479,9 @@ cleanup_exit(int i)
 			}
 		}
 	}
+	/* Override default fatal exit value when auth was attempted */
+	if (i == 255 && auth_attempted)
+		_exit(EXIT_AUTH_ATTEMPTED);
 #ifdef SSH_AUDIT_EVENTS
 	/* done after do_cleanup so it can cancel the PAM auth 'thread' */
 	if (the_active_state != NULL && mm_is_monitor())
