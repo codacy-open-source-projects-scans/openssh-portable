@@ -1,4 +1,4 @@
-#	$OpenBSD: rekey.sh,v 1.28 2024/08/21 10:33:27 dtucker Exp $
+#	$OpenBSD: rekey.sh,v 1.30 2024/08/28 12:08:26 djm Exp $
 #	Placed in the Public Domain.
 
 tid="rekey"
@@ -28,6 +28,11 @@ ssh_data_rekeying()
 		echo "$_kexopt" >> $OBJ/sshd_proxy
 		_opts="$_opts -o$_kexopt"
 	fi
+	case "$_kexopt" in
+	MACs=*)
+		# default chacha20-poly1305 cipher has implicit MAC
+		_opts="$_opts -oCiphers=aes128-ctr" ;;
+	esac
 	trace  bytes $_bytes kex $_kexopt opts $_opts
 	rm -f ${COPY} ${COPY2} ${LOG}
 	# Create data file just big enough to reach rekey threshold.
@@ -40,16 +45,22 @@ ssh_data_rekeying()
 	cmp ${COPY} ${COPY2}		|| fail "corrupted copy ($@)"
 	n=`grep 'NEWKEYS sent' ${LOG} | wc -l`
 	n=`expr $n - 1`
+	_want=`echo $_kexopt | cut -f2 -d=`
+	_got=""
 	case "$_kexopt" in
-	KexAlgorithms*)
-		_want=`echo $_kexopt | cut -f2 -d=`
+	KexAlgorithms=*)
 		_got=`awk '/kex: algorithm: /{print $4}' ${LOG} | \
-		    tr -d '\r' | sort -u`
-		if [ "$_want" != "$_got" ]; then
-			fail "expected kex $_want, got $_got"
-		fi
-		 ;;
+		    tr -d '\r' | sort -u` ;;
+	Ciphers=*)
+		_got=`awk '/kex: client->server cipher:/{print $5}' ${LOG} | \
+		    tr -d '\r' | sort -u` ;;
+	MACs=*)
+		_got=`awk '/kex: client->server cipher:/{print $7}' ${LOG} | \
+		    tr -d '\r' | sort -u` ;;
 	esac
+	if [ "$_want" != "$_got" ]; then
+		fail "unexpected algorithm, want $_want, got $_got"
+	fi
 	trace "$n rekeying(s)"
 	if [ $n -lt 1 ]; then
 		fail "no rekeying occurred ($@)"
@@ -173,7 +184,7 @@ for size in 16 1k 1K 1m 1M 1g 1G 4G 8G; do
 		4g|4G)	bytes=4294967296 ;;
 		8g|8G)	bytes=8589934592 ;;
 	esac
-	b=`${SSH} -G -o "rekeylimit $size" -f $OBJ/ssh_proxy host | \
+	b=`${SSH} -G -o "rekeylimit $size" -F $OBJ/ssh_proxy host | \
 	    awk '/rekeylimit/{print $2}'`
 	if [ "$bytes" != "$b" ]; then
 		fatal "rekeylimit size: expected $bytes bytes got $b"
@@ -189,7 +200,7 @@ for time in 1 1m 1M 1h 1H 1d 1D 1w 1W; do
 		1d|1D)	seconds=86400 ;;
 		1w|1W)	seconds=604800 ;;
 	esac
-	s=`${SSH} -G -o "rekeylimit default $time" -f $OBJ/ssh_proxy host | \
+	s=`${SSH} -G -o "rekeylimit default $time" -F $OBJ/ssh_proxy host | \
 	    awk '/rekeylimit/{print $3}'`
 	if [ "$seconds" != "$s" ]; then
 		fatal "rekeylimit time: expected $time seconds got $s"
