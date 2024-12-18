@@ -1,4 +1,4 @@
-/* $OpenBSD: ssh-agent.c,v 1.308 2024/10/24 03:15:47 djm Exp $ */
+/* $OpenBSD: ssh-agent.c,v 1.309 2024/11/06 22:51:26 djm Exp $ */
 /*
  * Author: Tatu Ylonen <ylo@cs.hut.fi>
  * Copyright (c) 1995 Tatu Ylonen <ylo@cs.hut.fi>, Espoo, Finland
@@ -93,6 +93,9 @@
 
 #ifndef DEFAULT_ALLOWED_PROVIDERS
 # define DEFAULT_ALLOWED_PROVIDERS "/usr/lib*/*,/usr/local/lib*/*"
+#endif
+#ifndef DEFAULT_WEBSAFE_ALLOWLIST
+# define DEFAULT_WEBSAFE_ALLOWLIST "ssh:*"
 #endif
 
 /* Maximum accepted message length */
@@ -198,6 +201,7 @@ static int fingerprint_hash = SSH_FP_HASH_DEFAULT;
 
 /* Refuse signing of non-SSH messages for web-origin FIDO keys */
 static int restrict_websafe = 1;
+static char *websafe_allowlist;
 
 static void
 close_socket(SocketEntry *e)
@@ -925,7 +929,8 @@ process_sign_request2(SocketEntry *e)
 	}
 	if (sshkey_is_sk(id->key)) {
 		if (restrict_websafe &&
-		    strncmp(id->key->sk_application, "ssh:", 4) != 0 &&
+		    match_pattern_list(id->key->sk_application,
+		    websafe_allowlist, 0) != 1 &&
 		    !check_websafe_message_contents(key, data)) {
 			/* error already logged */
 			goto send;
@@ -2210,8 +2215,10 @@ int
 main(int ac, char **av)
 {
 	int c_flag = 0, d_flag = 0, D_flag = 0, k_flag = 0, s_flag = 0;
-	int sock, ch, result, saved_errno;
-	char *shell, *format, *pidstr, *agentsocket = NULL;
+	int sock = -1, ch, result, saved_errno;
+	char *shell, *format, *fdstr, *pidstr, *agentsocket = NULL;
+	const char *errstr = NULL;
+	const char *ccp;
 #ifdef HAVE_SETRLIMIT
 	struct rlimit rlim;
 #endif
@@ -2264,7 +2271,12 @@ main(int ac, char **av)
 				restrict_websafe = 0;
 			else if (strcmp(optarg, "allow-remote-pkcs11") == 0)
 				remote_add_provider = 1;
-			else
+			else if ((ccp = strprefix(optarg,
+			    "websafe-allow=", 0)) != NULL) {
+				if (websafe_allowlist != NULL)
+					fatal("websafe-allow already set");
+				websafe_allowlist = xstrdup(ccp);
+			} else
 				fatal("Unknown -O option");
 			break;
 		case 'P':
@@ -2308,6 +2320,8 @@ main(int ac, char **av)
 
 	if (allowed_providers == NULL)
 		allowed_providers = xstrdup(DEFAULT_ALLOWED_PROVIDERS);
+	if (websafe_allowlist == NULL)
+		websafe_allowlist = xstrdup(DEFAULT_WEBSAFE_ALLOWLIST);
 
 	if (ac == 0 && !c_flag && !s_flag) {
 		shell = getenv("SHELL");
@@ -2316,8 +2330,6 @@ main(int ac, char **av)
 			c_flag = 1;
 	}
 	if (k_flag) {
-		const char *errstr = NULL;
-
 		pidstr = getenv(SSH_AGENTPID_ENV_NAME);
 		if (pidstr == NULL) {
 			fprintf(stderr, "%s not set, cannot kill agent\n",
@@ -2355,33 +2367,59 @@ main(int ac, char **av)
 
 	parent_pid = getpid();
 
-	if (agentsocket == NULL) {
-		/* Create private directory for agent socket */
-		mktemp_proto(socket_dir, sizeof(socket_dir));
-		if (mkdtemp(socket_dir) == NULL) {
-			perror("mkdtemp: private socket dir");
-			exit(1);
+	/* Has the socket been provided via socket activation? */
+	if (agentsocket == NULL && ac == 0 && (d_flag || D_flag) &&
+	    (pidstr = getenv("LISTEN_PID")) != NULL &&
+	    (fdstr = getenv("LISTEN_FDS")) != NULL) {
+		if (strcmp(fdstr, "1") != 0) {
+			fatal("unexpected LISTEN_FDS contents "
+			    "(want: \"1\" got\"%s\"", fdstr);
 		}
-		snprintf(socket_name, sizeof socket_name, "%s/agent.%ld", socket_dir,
-		    (long)parent_pid);
-	} else {
-		/* Try to use specified agent socket */
-		socket_dir[0] = '\0';
-		strlcpy(socket_name, agentsocket, sizeof socket_name);
+		if (fcntl(3, F_GETFL) == -1)
+			fatal("LISTEN_FDS set but fd 3 unavailable");
+		pid = (int)strtonum(pidstr, 1, INT_MAX, &errstr);
+		if (errstr != NULL)
+			fatal("invalid LISTEN_PID: %s", errstr);
+		if (pid != getpid())
+			fatal("bad LISTEN_PID: %d vs pid %d", pid, getpid());
+		debug("using socket activation on fd=3");
+		sock = 3;
 	}
+
+	/* Otherwise, create private directory for agent socket */
+	if (sock == -1) {
+		if (agentsocket == NULL) {
+			mktemp_proto(socket_dir, sizeof(socket_dir));
+			if (mkdtemp(socket_dir) == NULL) {
+				perror("mkdtemp: private socket dir");
+				exit(1);
+			}
+			snprintf(socket_name, sizeof socket_name,
+			   "%s/agent.%ld", socket_dir,
+		    (long)parent_pid);
+		} else {
+			/* Try to use specified agent socket */
+			socket_dir[0] = '\0';
+			strlcpy(socket_name, agentsocket, sizeof socket_name);
+		}
+	}
+
+	closefrom(sock == -1 ? STDERR_FILENO + 1 : sock + 1);
 
 	/*
 	 * Create socket early so it will exist before command gets run from
 	 * the parent.
 	 */
-	prev_mask = umask(0177);
-	sock = unix_listener(socket_name, SSH_LISTEN_BACKLOG, 0);
-	if (sock < 0) {
-		/* XXX - unix_listener() calls error() not perror() */
-		*socket_name = '\0'; /* Don't unlink any existing file */
-		cleanup_exit(1);
+	if (sock == -1) {
+		prev_mask = umask(0177);
+		sock = unix_listener(socket_name, SSH_LISTEN_BACKLOG, 0);
+		if (sock < 0) {
+			/* XXX - unix_listener() calls error() not perror() */
+			*socket_name = '\0'; /* Don't unlink existing file */
+			cleanup_exit(1);
+		}
+		umask(prev_mask);
 	}
-	umask(prev_mask);
 
 	/*
 	 * Fork, and have the parent execute the command, if any, or present
@@ -2391,11 +2429,14 @@ main(int ac, char **av)
 		log_init(__progname,
 		    d_flag ? SYSLOG_LEVEL_DEBUG3 : SYSLOG_LEVEL_INFO,
 		    SYSLOG_FACILITY_AUTH, 1);
-		format = c_flag ? "setenv %s %s;\n" : "%s=%s; export %s;\n";
-		printf(format, SSH_AUTHSOCKET_ENV_NAME, socket_name,
-		    SSH_AUTHSOCKET_ENV_NAME);
-		printf("echo Agent pid %ld;\n", (long)parent_pid);
-		fflush(stdout);
+		if (socket_name[0] != '\0') {
+			format = c_flag ?
+			    "setenv %s %s;\n" : "%s=%s; export %s;\n";
+			printf(format, SSH_AUTHSOCKET_ENV_NAME, socket_name,
+			    SSH_AUTHSOCKET_ENV_NAME);
+			printf("echo Agent pid %ld;\n", (long)parent_pid);
+			fflush(stdout);
+		}
 		goto skip;
 	}
 	pid = fork();

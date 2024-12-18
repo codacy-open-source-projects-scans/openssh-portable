@@ -18,7 +18,6 @@ top_srcdir=@top_srcdir@
 abs_top_srcdir=@abs_top_srcdir@
 abs_top_builddir=@abs_top_builddir@
 
-DESTDIR=
 VPATH=@srcdir@
 SSH_PROGRAM=@bindir@/ssh
 ASKPASS_PROGRAM=$(libexecdir)/ssh-askpass
@@ -33,6 +32,7 @@ SSH_PRIVSEP_USER=@SSH_PRIVSEP_USER@
 STRIP_OPT=@STRIP_OPT@
 TEST_SHELL=@TEST_SHELL@
 BUILDDIR=@abs_top_builddir@
+SK_STANDALONE=@SK_STANDALONE@
 
 PATHS= -DSSHDIR=\"$(sysconfdir)\" \
 	-D_PATH_SSH_PROGRAM=\"$(SSH_PROGRAM)\" \
@@ -59,6 +59,7 @@ GSSLIBS=@GSSLIBS@
 SSHDLIBS=@SSHDLIBS@
 LIBEDIT=@LIBEDIT@
 LIBFIDO2=@LIBFIDO2@
+LIBWTMPDB=@LIBWTMPDB@
 AR=@AR@
 AWK=@AWK@
 RANLIB=@RANLIB@
@@ -73,7 +74,7 @@ MKDIR_P=@MKDIR_P@
 
 .SUFFIXES: .lo
 
-TARGETS=ssh$(EXEEXT) sshd$(EXEEXT) sshd-session$(EXEEXT) sshd-auth$(EXEEXT) ssh-add$(EXEEXT) ssh-keygen$(EXEEXT) ssh-keyscan${EXEEXT} ssh-keysign${EXEEXT} ssh-pkcs11-helper$(EXEEXT) ssh-agent$(EXEEXT) scp$(EXEEXT) sftp-server$(EXEEXT) sftp$(EXEEXT) ssh-sk-helper$(EXEEXT)
+TARGETS=ssh$(EXEEXT) sshd$(EXEEXT) sshd-session$(EXEEXT) sshd-auth$(EXEEXT) ssh-add$(EXEEXT) ssh-keygen$(EXEEXT) ssh-keyscan${EXEEXT} ssh-keysign${EXEEXT} ssh-pkcs11-helper$(EXEEXT) ssh-agent$(EXEEXT) scp$(EXEEXT) sftp-server$(EXEEXT) sftp$(EXEEXT) ssh-sk-helper$(EXEEXT) $(SK_STANDALONE)
 
 XMSS_OBJS=\
 	ssh-xmss.o \
@@ -233,10 +234,10 @@ sshd$(EXEEXT): libssh.a	$(LIBCOMPAT) $(SSHDOBJS)
 	$(LD) -o $@ $(SSHDOBJS) $(LDFLAGS) -lssh -lopenbsd-compat $(SSHDLIBS) $(LIBS) $(CHANNELLIBS)
 
 sshd-session$(EXEEXT): libssh.a	$(LIBCOMPAT) $(SSHD_SESSION_OBJS)
-	$(LD) -o $@ $(SSHD_SESSION_OBJS) $(LDFLAGS) -lssh -lopenbsd-compat $(SSHDLIBS) $(LIBS) $(GSSLIBS) $(K5LIBS) $(CHANNELLIBS)
+	$(LD) -o $@ $(SSHD_SESSION_OBJS) $(LDFLAGS) -lssh -lopenbsd-compat $(SSHDLIBS) $(LIBS) $(GSSLIBS) $(K5LIBS) $(CHANNELLIBS) $(LIBWTMPDB)
 
 sshd-auth$(EXEEXT): libssh.a $(LIBCOMPAT) $(SSHD_AUTH_OBJS)
-	$(LD) -o $@ $(SSHD_AUTH_OBJS) $(LDFLAGS) -lssh -lopenbsd-compat $(SSHDLIBS) $(LIBS) $(GSSLIBS) $(K5LIBS) $(CHANNELLIBS)
+	$(LD) -o $@ $(SSHD_AUTH_OBJS) $(LDFLAGS) -lssh -lopenbsd-compat $(SSHDLIBS) $(LIBS) $(GSSLIBS) $(K5LIBS) $(CHANNELLIBS) $(LIBWTMPDB)
 
 scp$(EXEEXT): $(LIBCOMPAT) libssh.a $(SCP_OBJS)
 	$(LD) -o $@ $(SCP_OBJS) $(LDFLAGS) -lssh -lopenbsd-compat $(LIBS)
@@ -271,6 +272,16 @@ sftp$(EXEEXT): $(LIBCOMPAT) libssh.a $(SFTP_OBJS)
 # test driver for the loginrec code - not built by default
 logintest: logintest.o $(LIBCOMPAT) libssh.a loginrec.o
 	$(LD) -o $@ logintest.o $(LDFLAGS) loginrec.o -lopenbsd-compat -lssh $(LIBS)
+
+# compile libssh objects with -fPIC for use in the sk_libfido2 shared library
+LIBSSH_PIC_OBJS=$(LIBSSH_OBJS:.o=.lo)
+libssh-pic.a: $(LIBSSH_PIC_OBJS)
+	$(AR) rv $@ $(LIBSSH_PIC_OBJS)
+	$(RANLIB) $@
+
+$(SK_STANDALONE): $(srcdir)/sk-usbhid.c $(LIBCOMPAT) libssh-pic.a
+	$(CC) -o $@ -shared $(CFLAGS_NOPIE) $(CPPFLAGS) -DSK_STANDALONE $(PICFLAG) $(srcdir)/sk-usbhid.c \
+	libssh-pic.a $(LDFLAGS_NOPIE) -lopenbsd-compat $(LIBS) $(LIBFIDO2) $(CHANNELLIBS)
 
 $(MANPAGES): $(MANPAGES_IN)
 	if test "$(MANTYPE)" = "cat"; then \
@@ -324,7 +335,8 @@ clean:	regressclean
 	rm -f regress/unittests/utf8/test_utf8$(EXEEXT)
 	rm -f regress/misc/sk-dummy/*.o
 	rm -f regress/misc/sk-dummy/*.lo
-	rm -f regress/misc/sk-dummy/sk-dummy.so
+	rm -f regress/misc/ssh-verify-attestation/ssh-verify-attestation$(EXEEXT)
+	rm -f regress/misc/ssh-verify-attestation/*.o
 	(cd openbsd-compat && $(MAKE) clean)
 
 distclean:	regressclean
@@ -362,6 +374,8 @@ distclean:	regressclean
 	rm -f regress/misc/sk-dummy/*.o
 	rm -f regress/misc/sk-dummy/*.lo
 	rm -f regress/misc/sk-dummy/sk-dummy.so
+	rm -f regress/misc/ssh-verify-attestation/ssh-verify-attestation$(EXEEXT)
+	rm -f regress/misc/ssh-verify-attestation/*.o
 	(cd openbsd-compat && $(MAKE) distclean)
 	if test -d pkg ; then \
 		rm -fr pkg ; \
@@ -538,6 +552,7 @@ regress-prep:
 	$(MKDIR_P) `pwd`/regress/unittests/sshsig
 	$(MKDIR_P) `pwd`/regress/unittests/utf8
 	$(MKDIR_P) `pwd`/regress/misc/sk-dummy
+	$(MKDIR_P) `pwd`/regress/misc/ssh-verify-attestation
 	[ -f `pwd`/regress/Makefile ] || \
 	    ln -s `cd $(srcdir) && pwd`/regress/Makefile `pwd`/regress/Makefile
 
@@ -724,6 +739,16 @@ regress/misc/sk-dummy/sk-dummy.so: $(SK_DUMMY_OBJS)
 	$(CC) $(CFLAGS) $(CPPFLAGS) $(PICFLAG) -shared -o $@ $(SK_DUMMY_OBJS) \
 	    -L. -Lopenbsd-compat -lopenbsd-compat $(LDFLAGS_NOPIE) $(TESTLIBS)
 
+SSH_VERIFY_ATTESTATION_OBJS=\
+	regress/misc/ssh-verify-attestation/ssh-verify-attestation.o \
+	$(SKOBJS)
+
+ssh-verify-attestation: regress/misc/ssh-verify-attestation/ssh-verify-attestation$(EXEEXT)
+
+regress/misc/ssh-verify-attestation/ssh-verify-attestation$(EXEEXT): $(LIBCOMPAT) libssh.a $(SSH_VERIFY_ATTESTATION_OBJS)
+	$(LD) -o $@ $(SSH_VERIFY_ATTESTATION_OBJS) $(LDFLAGS) -lssh -lopenbsd-compat $(LIBS) $(CHANNELLIBS) $(LIBFIDO2)
+
+
 regress-binaries: regress-prep $(LIBCOMPAT) \
 	regress/modpipe$(EXEEXT) \
 	regress/timestamp$(EXEEXT) \
@@ -757,6 +782,8 @@ unit: regress-unit-binaries
 		OBJ="$(BUILDDIR)/regress" \
 		$@ && echo $@ tests passed
 
+TEST_SSH_SSHD="$(BUILDDIR)/sshd"
+
 interop-tests t-exec file-tests extra-tests: regress-prep regress-binaries $(TARGETS)
 	cd $(srcdir)/regress || exit $$?; \
 	EGREP='@EGREP@' \
@@ -771,7 +798,7 @@ interop-tests t-exec file-tests extra-tests: regress-prep regress-binaries $(TAR
 		TEST_MALLOC_OPTIONS="@TEST_MALLOC_OPTIONS@" \
 		TEST_SSH_SCP="$(BUILDDIR)/scp" \
 		TEST_SSH_SSH="$(BUILDDIR)/ssh" \
-		TEST_SSH_SSHD="$(BUILDDIR)/sshd" \
+		TEST_SSH_SSHD="$(TEST_SSH_SSHD)" \
 		TEST_SSH_SSHD_SESSION="$(BUILDDIR)/sshd-session" \
 		TEST_SSH_SSHD_AUTH="$(BUILDDIR)/sshd-auth" \
 		TEST_SSH_SSHAGENT="$(BUILDDIR)/ssh-agent" \

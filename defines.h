@@ -216,7 +216,9 @@ including rpc/rpc.h breaks Solaris 6
 /* (or die trying) */
 
 #ifndef HAVE_U_INT
+typedef unsigned short u_short;
 typedef unsigned int u_int;
+typedef unsigned long u_long;
 #endif
 
 #ifndef HAVE_INTXX_T
@@ -645,6 +647,32 @@ struct winsize {
 #  define BYTE_ORDER LITTLE_ENDIAN
 # endif /* WORDS_BIGENDIAN */
 #endif /* BYTE_ORDER */
+
+#ifndef HAVE_ENDIAN_H
+# define openssh_swap32(v)					\
+	(uint32_t)(((uint32_t)(v) & 0xff) << 24 |		\
+	((uint32_t)(v) & 0xff00) << 8 |				\
+	((uint32_t)(v) & 0xff0000) >> 8 |			\
+	((uint32_t)(v) & 0xff000000) >> 24)
+# define openssh_swap64(v)					\
+	(uint64_t)((((uint64_t)(v) & 0xff) << 56) |		\
+	((uint64_t)(v) & 0xff00ULL) << 40 |			\
+	((uint64_t)(v) & 0xff0000ULL) << 24 |			\
+	((uint64_t)(v) & 0xff000000ULL) << 8 |		\
+	((uint64_t)(v) & 0xff00000000ULL) >> 8 |		\
+	((uint64_t)(v) & 0xff0000000000ULL) >> 24 |		\
+	((uint64_t)(v) & 0xff000000000000ULL) >> 40 |		\
+	((uint64_t)(v) & 0xff00000000000000ULL) >> 56)
+# ifdef WORDS_BIGENDIAN
+#  define le32toh(v) (openssh_swap32(v))
+#  define le64toh(v) (openssh_swap64(v))
+#  define htole64(v) (openssh_swap64(v))
+# else
+#  define le32toh(v) ((uint32_t)v)
+#  define le64toh(v) ((uint64_t)v)
+#  define htole64(v) ((uint64_t)v)
+# endif
+#endif
 
 /* Function replacement / compatibility hacks */
 
