@@ -1,4 +1,4 @@
-/* $OpenBSD: sshsig.c,v 1.37 2024/11/26 22:05:51 djm Exp $ */
+/* $OpenBSD: sshsig.c,v 1.40 2025/09/25 06:23:19 jsg Exp $ */
 /*
  * Copyright (c) 2019 Google LLC
  *
@@ -879,6 +879,7 @@ cert_filter_principals(const char *path, u_long linenum,
 	}
 	if ((principals = sshbuf_dup_string(nprincipals)) == NULL) {
 		error_f("buffer error");
+		r = SSH_ERR_ALLOC_FAIL;
 		goto out;
 	}
 	/* success */
@@ -1122,11 +1123,12 @@ sshsig_match_principals(const char *path, const char *principal,
 		linesize = 0;
 	}
 	fclose(f);
+	free(line);
 
 	if (ret == 0) {
 		if (nprincipals == 0)
 			ret = SSH_ERR_KEY_NOT_FOUND;
-		if (nprincipalsp != 0)
+		if (nprincipalsp != NULL)
 			*nprincipalsp = nprincipals;
 		if (principalsp != NULL) {
 			*principalsp = principals;
