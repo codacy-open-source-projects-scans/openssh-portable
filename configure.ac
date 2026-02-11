@@ -525,6 +525,7 @@ AC_CHECK_HEADERS([ \
 # platform.  Usually these are just empty, but in some cases they'll include
 # the equivalent file.  This avoids having to wrap those includes in
 # '#ifdef HAVE_FOO_H'.  If we create any such headers, add the path to includes.
+COMPATINCLUDESDIR="openbsd-compat/include"
 COMPATINCLUDES=""
 AC_CHECK_HEADERS([ \
     endian.h \
@@ -536,12 +537,14 @@ AC_CHECK_HEADERS([ \
     poll.h \
     stdint.h \
     sys/mman.h \
+    sys/mount.h \
     sys/stat.h \
+    sys/statvfs.h \
     sys/time.h \
     sys/un.h \
     time.h \
     util.h], [], [
-	COMPATINCLUDES="openbsd-compat/include"
+	COMPATINCLUDES="$COMPATINCLUDESDIR"
 	header="$COMPATINCLUDES/$ac_header"
 	dir=`dirname "$header"`
 	mkdir -p "$dir"
@@ -552,6 +555,33 @@ AC_CHECK_HEADERS([ \
 	*)      ;;
 	esac >"$header"
 ])
+
+dnl Now create replacement headers for those that we always want to shim.
+for include in sys/queue.h sys/tree.h; do
+	COMPATINCLUDES="$COMPATINCLUDESDIR"
+	header="$COMPATINCLUDES/$include"
+	dir=`dirname "$header"`
+	mkdir -p "$dir"
+	case "$include" in
+	sys/queue.h)
+		echo '#include "openbsd-compat/sys-queue.h"'
+		;;
+	sys/tree.h)
+		echo '#include "openbsd-compat/sys-tree.h"'
+		;;
+	esac >"$header"
+done
+
+# DragonFly uses STAILQ_* in its sys/mount.h, so we explicitly
+# need to include the system one first, not our shim.
+case "$host" in
+*-*-dragonfly*)
+	COMPATINCLUDES="$COMPATINCLUDESDIR"
+	mkdir -p "$COMPATINCLUDES/sys"
+	echo '#include "/usr/include/sys/queue.h"'
+	echo '#include "/usr/include/sys/mount.h"'
+	;;
+esac > "$COMPATINCLUDES/sys/mount.h"
 
 AC_CHECK_DECLS([le32toh, le64toh, htole64], [], [], [
 #ifdef HAVE_SYS_TYPES_H
