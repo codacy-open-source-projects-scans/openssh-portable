@@ -1,4 +1,4 @@
-/* $OpenBSD: clientloop.c,v 1.423 2026/04/19 23:37:22 djm Exp $ */
+/* $OpenBSD: clientloop.c,v 1.427 2026/09/16 23:26:41 jsg Exp $ */
 /*
  * Author: Tatu Ylonen <ylo@cs.hut.fi>
  * Copyright (c) 1995 Tatu Ylonen <ylo@cs.hut.fi>, Espoo, Finland
@@ -106,6 +106,8 @@
 
 /* Uncertainty (in percent) of keystroke timing intervals */
 #define SSH_KEYSTROKE_TIMING_FUZZ 10
+
+extern char *__progname;
 
 /* import options */
 extern Options options;
@@ -1594,8 +1596,12 @@ client_loop(struct ssh *ssh, int have_pty, int escape_char_arg,
 		if (sigprocmask(SIG_BLOCK, &bsigset, &osigset) == -1)
 			error_f("bsigset sigprocmask: %s", strerror(errno));
 		if (siginfo_received) {
+			char ident[256];
+
+			sshpkt_fmt_connection_id(ssh, ident, sizeof(ident));
+			logit("%s: connection to %s, up %.1f seconds",
+			    __progname, ident, monotime_double() - start_time);
 			siginfo_received = 0;
-			channel_report_open(ssh, SYSLOG_LEVEL_INFO);
 		}
 		if (quit_pending)
 			break;
@@ -2821,13 +2827,13 @@ client_session2_setup(struct ssh *ssh, int id, int want_tty, int want_subsystem,
 }
 
 void
-client_channel_reqest_agent_forwarding(struct ssh *ssh, int id)
+client_channel_request_agent_forwarding(struct ssh *ssh, int id)
 {
 	const char *req = "auth-agent-req@openssh.com";
 	int r;
 
 	if (ssh->kex != NULL && (ssh->kex->flags & KEX_HAS_NEWAGENT) != 0)
-		req = "agent-req"; /* XXX RFC XXX */
+		req = "agent-req"; /* RFC 9987 */
 	debug("Requesting agent forwarding on channel %d via %s", id, req);
 	channel_request_start(ssh, id, req, 0);
 	if ((r = sshpkt_send(ssh)) != 0)
