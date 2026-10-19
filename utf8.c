@@ -316,7 +316,7 @@ mprintf(const char *fmt, ...)
 /*
  * Set up libc for multibyte output in the user's chosen locale.
  *
- * XXX: we are known to have problems with Turkic languahes (i/I confusion) so
+ * XXX: we are known to have problems with Turkic languages (i/I confusion) so
  *      we deliberately fall back to the C locale for now. Longer term we
  *      should always prefer to select C.[encoding] if possible, but there's
  *      no standardisation in locales between systems, so we'll need to survey
@@ -339,7 +339,7 @@ msetlocale(void)
 			continue;
 		if (strncasecmp(cp, "tr", 2) != 0 &&
 		    strncasecmp(cp, "crh", 3) != 0 &&
-		    strncasecmp(cp, "az", 3) != 0)
+		    strncasecmp(cp, "az", 2) != 0)
 			break;
 		/*
 		 * If we're in a UTF-8 locale then prefer to use
